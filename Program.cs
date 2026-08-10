@@ -2,87 +2,192 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
-using WinRT.Interop;
 
-class Program
+internal class Program
 {
     [STAThread]
-    static async Task Main(string[] args)
+    private static async Task Main(string[] args)
     {
-        if (args.Length < 2) return;
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine(
+                "Usage: ShareHelper.exe <filePath> <hwnd>");
+            return;
+        }
 
         string filePath = args[0];
-        if (!File.Exists(filePath)) return;
 
-        if (!long.TryParse(args[1], out long hwndLong)) return;
+        if (!File.Exists(filePath))
+        {
+            Console.Error.WriteLine(
+                $"File does not exist: {filePath}");
+            return;
+        }
+
+        if (!long.TryParse(args[1], out long hwndLong))
+        {
+            Console.Error.WriteLine(
+                $"Invalid HWND: {args[1]}");
+            return;
+        }
+
         IntPtr hwnd = new IntPtr(hwndLong);
+
+        if (hwnd == IntPtr.Zero)
+        {
+            Console.Error.WriteLine("Invalid HWND.");
+            return;
+        }
 
         try
         {
-            // 1. Get the interop instance using the system COM interface
-            IDataTransferManagerInterop interop = DataTransferManagerInterop.GetNative();
-
-            // 2. Fetch the DataTransferManager specifically bound to your JavaFX HWND
-            Guid dtmIid = typeof(DataTransferManager).GUID;
-            IntPtr dtmPtr = interop.GetForWindow(hwnd, ref dtmIid);
-            DataTransferManager dtm = DataTransferManager.FromAbi(dtmPtr);
-
-            // 3. Register DataRequested callback
-            dtm.DataRequested += async (sender, e) =>
-            {
-                DataRequestDeferral deferral = e.Request.GetDeferral();
-                try
-                {
-                    e.Request.Data.Properties.Title = Path.GetFileName(filePath);
-                    
-                    StorageFile storageFile = await StorageFile.GetFileFromPathAsync(filePath);
-                    e.Request.Data.SetStorageItems(new List<IStorageItem> { storageFile });
-                }
-                finally
-                {
-                    deferral.Complete();
-                }
-            };
-
-            // 4. Trigger Windows Share UI anchored to the JavaFX Window Handle
-            interop.ShowShareUIForWindow(hwnd);
-
-            // Give Windows WinRT process time to process the thread transfer
-            await Task.Delay(3000);
+            await ShareFileAsync(filePath, hwnd);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Share UI Error: {ex.Message}");
+            Console.Error.WriteLine(
+                $"Share UI Error: {ex}");
+        }
+    }
+
+    private static async Task ShareFileAsync(
+        string filePath,
+        IntPtr hwnd)
+    { 
+        IDataTransferManagerInterop interop =
+            DataTransferManagerInterop.GetNative();
+ 
+        Guid dtmIid =
+            new Guid("A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
+ 
+        IntPtr dtmPtr =
+            interop.GetForWindow(hwnd, ref dtmIid);
+
+        if (dtmPtr == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "GetForWindow returned a null DataTransferManager.");
+        }
+
+        DataTransferManager dtm = null!;
+
+        try
+        {
+            dtm = DataTransferManager.FromAbi(dtmPtr);
+
+            var completed =
+                new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+            TypedEventHandler<DataTransferManager,
+                DataRequestedEventArgs>? handler = null;
+
+            handler = async (sender, args) =>
+            {
+                DataRequestDeferral? deferral = null;
+
+                try
+                {
+                    deferral = args.Request.GetDeferral();
+
+                    args.Request.Data.Properties.Title =
+                        Path.GetFileName(filePath);
+
+                    StorageFile storageFile =
+                        await StorageFile.GetFileFromPathAsync(filePath);
+
+                    args.Request.Data.SetStorageItems(
+                        new List<IStorageItem>
+                        {
+                            storageFile
+                        });
+
+                    completed.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    completed.TrySetException(ex);
+                }
+                finally
+                {
+                    deferral?.Complete();
+                }
+            };
+
+            dtm.DataRequested += handler;
+
+            try
+            { 
+                interop.ShowShareUIForWindow(hwnd);
+ 
+                await completed.Task;
+            }
+            finally
+            {
+                dtm.DataRequested -= handler;
+            }
+        }
+        finally
+        {
+            Marshal.Release(dtmPtr);
         }
     }
 }
-
-// Fixed COM Interface Definition & Factory
+ 
 [ComImport]
-[Guid("3A3DCD28-0057-4D77-9A9A-10B39774002D")] // Correct Win32 IID
+[Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IDataTransferManagerInterop
+internal interface IDataTransferManagerInterop
 {
-    IntPtr GetForWindow([In] IntPtr appWindow, [In] ref Guid riid);
-    void ShowShareUIForWindow([In] IntPtr appWindow);
-}
+    IntPtr GetForWindow(
+        [In] IntPtr appWindow,
+        [In] ref Guid riid);
 
-static class DataTransferManagerInterop
+    void ShowShareUIForWindow(
+        [In] IntPtr appWindow);
+}
+ 
+internal static class DataTransferManagerInterop
 {
-    [DllImport("api-ms-win-core-winrt-l1-1-0.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    [DllImport(
+        "api-ms-win-core-winrt-l1-1-0.dll",
+        CharSet = CharSet.Unicode,
+        ExactSpelling = true)]
     private static extern int RoGetActivationFactory(
-        [MarshalAs(UnmanagedType.BStr)] string runtimeClassId,
+        [MarshalAs(UnmanagedType.LPWStr)]
+        string runtimeClassId,
+
         [In] ref Guid riid,
+
         out IntPtr factory);
 
     public static IDataTransferManagerInterop GetNative()
     {
-        Guid interopGuid = typeof(IDataTransferManagerInterop).GUID;
-        int hr = RoGetActivationFactory("Windows.ApplicationModel.DataTransfer.DataTransferManager", ref interopGuid, out IntPtr factory);
-        if (hr != 0) Marshal.ThrowExceptionForHR(hr);
-        return (IDataTransferManagerInterop)Marshal.GetObjectForIUnknown(factory);
+        Guid interopGuid =
+            typeof(IDataTransferManagerInterop).GUID;
+
+        int hr = RoGetActivationFactory(
+            "Windows.ApplicationModel.DataTransfer.DataTransferManager",
+            ref interopGuid,
+            out IntPtr factory);
+
+        if (hr < 0)
+        {
+            Marshal.ThrowExceptionForHR(hr);
+        }
+
+        try
+        {
+            return (IDataTransferManagerInterop)
+                Marshal.GetObjectForIUnknown(factory);
+        }
+        finally
+        {
+            Marshal.Release(factory);
+        }
     }
 }
