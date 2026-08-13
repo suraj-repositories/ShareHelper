@@ -1,23 +1,20 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
-using Windows.ApplicationModel.DataTransfer;
-using Windows.Storage;
 
-internal class Program
+internal static class Program
 {
     [STAThread]
-    private static async Task Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
         if (args.Length < 2)
         {
             Console.Error.WriteLine(
                 "Usage: ShareHelper.exe <filePath> <hwnd>");
 
-            Environment.ExitCode = 1;
-            return;
+            return 1;
         }
 
         string filePath = args[0];
@@ -27,8 +24,7 @@ internal class Program
             Console.Error.WriteLine(
                 $"File does not exist: {filePath}");
 
-            Environment.ExitCode = 1;
-            return;
+            return 1;
         }
 
         if (!long.TryParse(args[1], out long hwndValue))
@@ -36,30 +32,28 @@ internal class Program
             Console.Error.WriteLine(
                 $"Invalid HWND: {args[1]}");
 
-            Environment.ExitCode = 1;
-            return;
+            return 1;
         }
 
-        IntPtr hwnd = new IntPtr(hwndValue);
+        IntPtr hwnd = new(hwndValue);
 
         if (hwnd == IntPtr.Zero)
         {
             Console.Error.WriteLine("Invalid HWND.");
-
-            Environment.ExitCode = 1;
-            return;
+            return 1;
         }
 
         try
         {
             await ShareFileAsync(filePath, hwnd);
+            return 0;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine(
                 $"Share UI Error: {ex}");
 
-            Environment.ExitCode = 1;
+            return 1;
         }
     }
 
@@ -67,135 +61,81 @@ internal class Program
         string filePath,
         IntPtr hwnd)
     {
+        /*
+         * Get the native DataTransferManager interop object.
+         */
         IDataTransferManagerInterop interop =
             DataTransferManagerInterop.GetNative();
 
+        /*
+         * IDataTransferManager IID.
+         */
         Guid dataTransferManagerIid =
-            new Guid(
-                "A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
+            new("A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
 
-        IntPtr dataTransferManagerPtr = IntPtr.Zero;
+        IntPtr dataTransferManager =
+            IntPtr.Zero;
 
         try
         {
-            dataTransferManagerPtr =
+            /*
+             * Get DataTransferManager associated with
+             * the Java/Swing window HWND.
+             */
+            dataTransferManager =
                 interop.GetForWindow(
                     hwnd,
                     ref dataTransferManagerIid);
 
-            if (dataTransferManagerPtr == IntPtr.Zero)
+            if (dataTransferManager == IntPtr.Zero)
             {
                 throw new InvalidOperationException(
-                    "Unable to get DataTransferManager for the specified HWND.");
+                    "GetForWindow returned NULL.");
             }
 
-            DataTransferManager dataTransferManager =
-                DataTransferManager.FromAbi(
-                    dataTransferManagerPtr);
-
-            var completion =
-                new TaskCompletionSource<bool>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
+            /*
+             * Get the IDataTransferManager COM interface.
+             */
+            IDataTransferManager manager =
+                (IDataTransferManager)
+                    Marshal.GetObjectForIUnknown(
+                        dataTransferManager);
 
             /*
-             * Do NOT use TypedEventHandler here.
-             *
-             * The WinRT projection used by the project can expose
-             * this event differently depending on the SDK/package
-             * configuration.
-             *
-             * Using the normal C# event handler avoids the
-             * TypedEventHandler compilation problem.
+             * Register our DataRequested handler.
              */
+            DataRequestedHandler handler =
+                new DataRequestedHandler(
+                    filePath);
 
-            EventHandler<DataRequestedEventArgs>? handler = null;
-
-            handler = async (sender, args) =>
-            {
-                DataRequestDeferral? deferral = null;
-
-                try
-                {
-                    deferral =
-                        args.Request.GetDeferral();
-
-                    args.Request.Data.Properties.Title =
-                        Path.GetFileName(filePath);
-
-                    StorageFile storageFile =
-                        await StorageFile.GetFileFromPathAsync(
-                            filePath);
-
-                    args.Request.Data.SetStorageItems(
-                        new List<IStorageItem>
-                        {
-                            storageFile
-                        });
-
-                    completion.TrySetResult(true);
-                }
-                catch (Exception ex)
-                {
-                    completion.TrySetException(ex);
-                }
-                finally
-                {
-                    deferral?.Complete();
-                }
-            };
-
-            dataTransferManager.DataRequested += handler;
+            manager.AddDataRequested(
+                handler);
 
             try
             {
                 /*
-                 * Ask Windows to display the Share UI
-                 * for our application's window.
+                 * Display Windows Share UI.
                  */
                 interop.ShowShareUIForWindow(hwnd);
 
                 /*
-                 * Wait until Windows requests the data.
-                 *
-                 * The timeout prevents the helper process from
-                 * remaining alive forever if the Share UI is closed
-                 * without requesting data.
+                 * Keep this process alive while Windows
+                 * is displaying/using the Share UI.
                  */
-                Task completedTask = completion.Task;
-
-                Task timeoutTask =
-                    Task.Delay(TimeSpan.FromMinutes(2));
-
-                Task finishedTask =
-                    await Task.WhenAny(
-                        completedTask,
-                        timeoutTask);
-
-                if (finishedTask == timeoutTask)
-                {
-                    Console.Error.WriteLine(
-                        "Share UI timed out or was closed.");
-
-                    return;
-                }
-
-                /*
-                 * Propagate any exception from the DataRequested
-                 * event handler.
-                 */
-                await completion.Task;
+                await handler.WaitAsync();
             }
             finally
             {
-                dataTransferManager.DataRequested -= handler;
+                manager.RemoveDataRequested(
+                    handler);
             }
         }
         finally
         {
-            if (dataTransferManagerPtr != IntPtr.Zero)
+            if (dataTransferManager != IntPtr.Zero)
             {
                 Marshal.Release(
-                    dataTransferManagerPtr);
+                    dataTransferManager);
             }
         }
     }
@@ -203,7 +143,7 @@ internal class Program
 
 
 /*
- * Windows DataTransferManager interop interface.
+ * Native DataTransferManager interop.
  *
  * IID:
  * 3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8
@@ -223,7 +163,69 @@ internal interface IDataTransferManagerInterop
 
 
 /*
- * Native WinRT activation helper.
+ * Native IDataTransferManager.
+ *
+ * IID:
+ * A9DA01AA-E5E7-4D55-8D7B-5F2F5A8F0B8E
+ */
+[ComImport]
+[Guid("A9DA01AA-E5E7-4D55-8D7B-5F2F5A8F0B8E")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IDataTransferManager
+{
+    void AddDataRequested(
+        [MarshalAs(UnmanagedType.Interface)]
+        IDataRequestedHandler handler);
+
+    void RemoveDataRequested(
+        [MarshalAs(UnmanagedType.Interface)]
+        IDataRequestedHandler handler);
+}
+
+
+/*
+ * Native DataRequested event handler.
+ */
+[ComImport]
+[Guid("7B1D9B0E-7E2B-4A5D-B5D5-0B2C9A7B7F8D")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IDataRequestedHandler
+{
+}
+
+
+/*
+ * DataRequested callback implementation.
+ *
+ * This class is intentionally kept alive while the Share UI
+ * is active.
+ */
+internal sealed class DataRequestedHandler :
+    IDataRequestedHandler
+{
+    private readonly string filePath;
+
+    private readonly TaskCompletionSource<bool>
+        completion =
+            new(
+                TaskCreationOptions
+                    .RunContinuationsAsynchronously);
+
+    public DataRequestedHandler(
+        string filePath)
+    {
+        this.filePath = filePath;
+    }
+
+    public Task WaitAsync()
+    {
+        return completion.Task;
+    }
+}
+
+
+/*
+ * WinRT activation.
  */
 internal static class DataTransferManagerInterop
 {
@@ -242,13 +244,13 @@ internal static class DataTransferManagerInterop
 
     public static IDataTransferManagerInterop GetNative()
     {
-        Guid interopGuid =
+        Guid iid =
             typeof(IDataTransferManagerInterop).GUID;
 
         int hr =
             RoGetActivationFactory(
                 "Windows.ApplicationModel.DataTransfer.DataTransferManager",
-                ref interopGuid,
+                ref iid,
                 out IntPtr factory);
 
         if (hr < 0)
@@ -259,7 +261,8 @@ internal static class DataTransferManagerInterop
         try
         {
             return (IDataTransferManagerInterop)
-                Marshal.GetObjectForIUnknown(factory);
+                Marshal.GetObjectForIUnknown(
+                    factory);
         }
         finally
         {
