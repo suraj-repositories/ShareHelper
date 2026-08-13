@@ -16,16 +16,28 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Check .NET SDK
+        run: dotnet --info
+
+      - name: Check Windows SDK
+        shell: pwsh
+        run: |
+          Write-Host "Windows SDK directories:"
+
+          Get-ChildItem `
+            "C:\Program Files (x86)\Windows Kits\10\Lib" `
+            -Directory |
+            Select-Object -ExpandProperty Name
+
       - name: Clean
         shell: pwsh
         run: |
-          if (Test-Path "bin") {
-            Remove-Item "bin" -Recurse -Force
-          }
-
-          if (Test-Path "obj") {
-            Remove-Item "obj" -Recurse -Force
-          }
+          Remove-Item `
+            -Recurse `
+            -Force `
+            "bin",
+            "obj" `
+            -ErrorAction SilentlyContinue
 
       - name: Restore
         run: dotnet restore
@@ -45,7 +57,7 @@ jobs:
           /p:EnableCompressionInSingleFile=true
           -o ./build-output
 
-      - name: Verify
+      - name: Verify EXE
         shell: pwsh
         run: |
           if (!(Test-Path "./build-output/ShareHelper.exe")) {
@@ -53,9 +65,10 @@ jobs:
             exit 1
           }
 
+          Write-Host "ShareHelper.exe successfully generated."
           Get-Item "./build-output/ShareHelper.exe"
 
-      - name: Upload
+      - name: Upload Finished Executable
         uses: actions/upload-artifact@v4
         with:
           name: ShareHelper-Binary
