@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
@@ -57,34 +56,38 @@ internal class Program
     private static async Task ShareFileAsync(
         string filePath,
         IntPtr hwnd)
-    { 
+    {
         IDataTransferManagerInterop interop =
             DataTransferManagerInterop.GetNative();
- 
+
         Guid dtmIid =
             new Guid("A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
- 
-        IntPtr dtmPtr =
-            interop.GetForWindow(hwnd, ref dtmIid);
 
-        if (dtmPtr == IntPtr.Zero)
-        {
-            throw new InvalidOperationException(
-                "GetForWindow returned a null DataTransferManager.");
-        }
-
-        DataTransferManager dtm = null!;
+        IntPtr dtmPtr = IntPtr.Zero;
 
         try
         {
-            dtm = DataTransferManager.FromAbi(dtmPtr);
+            dtmPtr = interop.GetForWindow(
+                hwnd,
+                ref dtmIid);
+
+            if (dtmPtr == IntPtr.Zero)
+            {
+                throw new InvalidOperationException(
+                    "GetForWindow returned a null DataTransferManager.");
+            }
+
+            DataTransferManager dtm =
+                DataTransferManager.FromAbi(dtmPtr);
 
             var completed =
                 new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
 
-            TypedEventHandler<DataTransferManager,
-                DataRequestedEventArgs>? handler = null;
+            // IMPORTANT:
+            // Use the delegate type from the Windows projection.
+            TypedEventHandler<DataTransferManager, DataRequestedEventArgs>
+                handler = null!;
 
             handler = async (sender, args) =>
             {
@@ -92,13 +95,15 @@ internal class Program
 
                 try
                 {
-                    deferral = args.Request.GetDeferral();
+                    deferral =
+                        args.Request.GetDeferral();
 
                     args.Request.Data.Properties.Title =
                         Path.GetFileName(filePath);
 
                     StorageFile storageFile =
-                        await StorageFile.GetFileFromPathAsync(filePath);
+                        await StorageFile.GetFileFromPathAsync(
+                            filePath);
 
                     args.Request.Data.SetStorageItems(
                         new List<IStorageItem>
@@ -121,9 +126,9 @@ internal class Program
             dtm.DataRequested += handler;
 
             try
-            { 
+            {
                 interop.ShowShareUIForWindow(hwnd);
- 
+
                 await completed.Task;
             }
             finally
@@ -133,11 +138,15 @@ internal class Program
         }
         finally
         {
-            Marshal.Release(dtmPtr);
+            if (dtmPtr != IntPtr.Zero)
+            {
+                Marshal.Release(dtmPtr);
+            }
         }
     }
 }
- 
+
+
 [ComImport]
 [Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -150,7 +159,8 @@ internal interface IDataTransferManagerInterop
     void ShowShareUIForWindow(
         [In] IntPtr appWindow);
 }
- 
+
+
 internal static class DataTransferManagerInterop
 {
     [DllImport(
@@ -165,15 +175,17 @@ internal static class DataTransferManagerInterop
 
         out IntPtr factory);
 
+
     public static IDataTransferManagerInterop GetNative()
     {
         Guid interopGuid =
             typeof(IDataTransferManagerInterop).GUID;
 
-        int hr = RoGetActivationFactory(
-            "Windows.ApplicationModel.DataTransfer.DataTransferManager",
-            ref interopGuid,
-            out IntPtr factory);
+        int hr =
+            RoGetActivationFactory(
+                "Windows.ApplicationModel.DataTransfer.DataTransferManager",
+                ref interopGuid,
+                out IntPtr factory);
 
         if (hr < 0)
         {
