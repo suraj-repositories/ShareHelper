@@ -16,35 +16,33 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Show .NET Information
+      - name: Show .NET Version
         run: dotnet --info
 
       - name: Restore Dependencies
         run: dotnet restore
 
-      - name: Build ShareHelper
-        run: |
-          dotnet build `
-            -c Release `
-            --no-restore
+      - name: Build
+        run: dotnet build -c Release --no-restore
 
-      - name: Publish Single-File Windows EXE
-        run: |
-          dotnet publish `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            --no-restore `
-            /p:PublishSingleFile=true `
-            /p:IncludeNativeLibrariesForSelfExtract=true `
-            /p:EnableCompressionInSingleFile=true `
-            -o ./build-output
+      - name: Publish ShareHelper
+        run: >
+          dotnet publish
+          -c Release
+          -r win-x64
+          --self-contained true
+          --no-restore
+          /p:PublishSingleFile=true
+          /p:IncludeNativeLibrariesForSelfExtract=true
+          /p:EnableCompressionInSingleFile=true
+          -o ./build-output
 
-      - name: Verify Executable
+      - name: Verify EXE
+        shell: pwsh
         run: |
           if (!(Test-Path "./build-output/ShareHelper.exe")) {
-            Write-Error "ShareHelper.exe was not generated."
-            exit 1
+              Write-Error "ShareHelper.exe was not generated."
+              exit 1
           }
 
           Get-Item "./build-output/ShareHelper.exe"
