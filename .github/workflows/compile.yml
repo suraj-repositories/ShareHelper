@@ -16,34 +16,54 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Check .NET SDK
+      - name: Show .NET SDK
         run: dotnet --info
 
-      - name: Check Windows SDK
+      - name: Inspect Windows SDK
         shell: pwsh
         run: |
-          Write-Host "Windows SDK directories:"
+          Write-Host "Windows SDK root:"
+          Write-Host "C:\Program Files (x86)\Windows Kits\10"
 
+          Write-Host "`nInstalled Windows SDK versions:"
           Get-ChildItem `
-            "C:\Program Files (x86)\Windows Kits\10\Lib" `
-            -Directory |
+            "C:\Program Files (x86)\Windows Kits\10\Platforms\UAP" `
+            -Directory `
+            -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty Name
+
+          Write-Host "`nChecking required SDK..."
+
+          $platform = "C:\Program Files (x86)\Windows Kits\10\Platforms\UAP\10.0.26100.0\Platform.xml"
+
+          if (!(Test-Path $platform)) {
+            Write-Error "Required Windows SDK metadata not found:"
+            Write-Error $platform
+            exit 1
+          }
+
+          Write-Host "FOUND:"
+          Write-Host $platform
 
       - name: Clean
         shell: pwsh
         run: |
-          Remove-Item `
+          Get-ChildItem `
+            -Path . `
+            -Include bin,obj `
+            -Directory `
             -Recurse `
-            -Force `
-            "bin",
-            "obj" `
-            -ErrorAction SilentlyContinue
+            -ErrorAction SilentlyContinue |
+            Remove-Item `
+              -Recurse `
+              -Force `
+              -ErrorAction SilentlyContinue
 
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore -r win-x64
 
       - name: Build
-        run: dotnet build -c Release --no-restore
+        run: dotnet build -c Release -r win-x64 --no-restore
 
       - name: Publish
         run: >
@@ -57,18 +77,23 @@ jobs:
           /p:EnableCompressionInSingleFile=true
           -o ./build-output
 
-      - name: Verify EXE
+      - name: Verify
         shell: pwsh
         run: |
-          if (!(Test-Path "./build-output/ShareHelper.exe")) {
+          $exe = "./build-output/ShareHelper.exe"
+
+          if (!(Test-Path $exe)) {
             Write-Error "ShareHelper.exe was not generated."
             exit 1
           }
 
-          Write-Host "ShareHelper.exe successfully generated."
-          Get-Item "./build-output/ShareHelper.exe"
+          $file = Get-Item $exe
 
-      - name: Upload Finished Executable
+          Write-Host "Build successful."
+          Write-Host "File: $($file.FullName)"
+          Write-Host "Size: $($file.Length) bytes"
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: ShareHelper-Binary
