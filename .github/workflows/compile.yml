@@ -1,27 +1,57 @@
 name: Compile Windows Executable
 
 on:
-  workflow_dispatch: # Allows you to manually trigger the compiler button
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest # Compiles on a native Windows cloud server
+    runs-on: windows-latest
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Setup .NET SDK
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x'
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
-    - name: Compile Single-File EXE
-      run: |
-        dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true -o ./build-output
+      - name: Show .NET Information
+        run: dotnet --info
 
-    - name: Upload Finished Executable
-      uses: actions/upload-artifact@v4
-      with:
-        name: ShareHelper-Binary
-        path: ./build-output/ShareHelper.exe
+      - name: Restore Dependencies
+        run: dotnet restore
+
+      - name: Build ShareHelper
+        run: |
+          dotnet build `
+            -c Release `
+            --no-restore
+
+      - name: Publish Single-File Windows EXE
+        run: |
+          dotnet publish `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            --no-restore `
+            /p:PublishSingleFile=true `
+            /p:IncludeNativeLibrariesForSelfExtract=true `
+            /p:EnableCompressionInSingleFile=true `
+            -o ./build-output
+
+      - name: Verify Executable
+        run: |
+          if (!(Test-Path "./build-output/ShareHelper.exe")) {
+            Write-Error "ShareHelper.exe was not generated."
+            exit 1
+          }
+
+          Get-Item "./build-output/ShareHelper.exe"
+
+      - name: Upload Finished Executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShareHelper-Binary
+          path: ./build-output/ShareHelper.exe
+          if-no-files-found: error
