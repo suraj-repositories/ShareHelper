@@ -1,1 +1,1 @@
-"# ShareHelper" 
+# ShareHelper

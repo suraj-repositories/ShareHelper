@@ -15,6 +15,8 @@ internal class Program
         {
             Console.Error.WriteLine(
                 "Usage: ShareHelper.exe <filePath> <hwnd>");
+
+            Environment.ExitCode = 1;
             return;
         }
 
@@ -24,21 +26,27 @@ internal class Program
         {
             Console.Error.WriteLine(
                 $"File does not exist: {filePath}");
+
+            Environment.ExitCode = 1;
             return;
         }
 
-        if (!long.TryParse(args[1], out long hwndLong))
+        if (!long.TryParse(args[1], out long hwndValue))
         {
             Console.Error.WriteLine(
                 $"Invalid HWND: {args[1]}");
+
+            Environment.ExitCode = 1;
             return;
         }
 
-        IntPtr hwnd = new IntPtr(hwndLong);
+        IntPtr hwnd = new IntPtr(hwndValue);
 
         if (hwnd == IntPtr.Zero)
         {
             Console.Error.WriteLine("Invalid HWND.");
+
+            Environment.ExitCode = 1;
             return;
         }
 
@@ -50,6 +58,8 @@ internal class Program
         {
             Console.Error.WriteLine(
                 $"Share UI Error: {ex}");
+
+            Environment.ExitCode = 1;
         }
     }
 
@@ -60,34 +70,45 @@ internal class Program
         IDataTransferManagerInterop interop =
             DataTransferManagerInterop.GetNative();
 
-        Guid dtmIid =
-            new Guid("A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
+        Guid dataTransferManagerIid =
+            new Guid(
+                "A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
 
-        IntPtr dtmPtr = IntPtr.Zero;
+        IntPtr dataTransferManagerPtr = IntPtr.Zero;
 
         try
         {
-            dtmPtr = interop.GetForWindow(
-                hwnd,
-                ref dtmIid);
+            dataTransferManagerPtr =
+                interop.GetForWindow(
+                    hwnd,
+                    ref dataTransferManagerIid);
 
-            if (dtmPtr == IntPtr.Zero)
+            if (dataTransferManagerPtr == IntPtr.Zero)
             {
                 throw new InvalidOperationException(
-                    "GetForWindow returned a null DataTransferManager.");
+                    "Unable to get DataTransferManager for the specified HWND.");
             }
 
-            DataTransferManager dtm =
-                DataTransferManager.FromAbi(dtmPtr);
+            DataTransferManager dataTransferManager =
+                DataTransferManager.FromAbi(
+                    dataTransferManagerPtr);
 
-            var completed =
+            var completion =
                 new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
 
-            // IMPORTANT:
-            // Use the delegate type from the Windows projection.
-            TypedEventHandler<DataTransferManager, DataRequestedEventArgs>
-                handler = null!;
+            /*
+             * Do NOT use TypedEventHandler here.
+             *
+             * The WinRT projection used by the project can expose
+             * this event differently depending on the SDK/package
+             * configuration.
+             *
+             * Using the normal C# event handler avoids the
+             * TypedEventHandler compilation problem.
+             */
+
+            EventHandler<DataRequestedEventArgs>? handler = null;
 
             handler = async (sender, args) =>
             {
@@ -111,11 +132,11 @@ internal class Program
                             storageFile
                         });
 
-                    completed.TrySetResult(true);
+                    completion.TrySetResult(true);
                 }
                 catch (Exception ex)
                 {
-                    completed.TrySetException(ex);
+                    completion.TrySetException(ex);
                 }
                 finally
                 {
@@ -123,30 +144,70 @@ internal class Program
                 }
             };
 
-            dtm.DataRequested += handler;
+            dataTransferManager.DataRequested += handler;
 
             try
             {
+                /*
+                 * Ask Windows to display the Share UI
+                 * for our application's window.
+                 */
                 interop.ShowShareUIForWindow(hwnd);
 
-                await completed.Task;
+                /*
+                 * Wait until Windows requests the data.
+                 *
+                 * The timeout prevents the helper process from
+                 * remaining alive forever if the Share UI is closed
+                 * without requesting data.
+                 */
+                Task completedTask = completion.Task;
+
+                Task timeoutTask =
+                    Task.Delay(TimeSpan.FromMinutes(2));
+
+                Task finishedTask =
+                    await Task.WhenAny(
+                        completedTask,
+                        timeoutTask);
+
+                if (finishedTask == timeoutTask)
+                {
+                    Console.Error.WriteLine(
+                        "Share UI timed out or was closed.");
+
+                    return;
+                }
+
+                /*
+                 * Propagate any exception from the DataRequested
+                 * event handler.
+                 */
+                await completion.Task;
             }
             finally
             {
-                dtm.DataRequested -= handler;
+                dataTransferManager.DataRequested -= handler;
             }
         }
         finally
         {
-            if (dtmPtr != IntPtr.Zero)
+            if (dataTransferManagerPtr != IntPtr.Zero)
             {
-                Marshal.Release(dtmPtr);
+                Marshal.Release(
+                    dataTransferManagerPtr);
             }
         }
     }
 }
 
 
+/*
+ * Windows DataTransferManager interop interface.
+ *
+ * IID:
+ * 3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8
+ */
 [ComImport]
 [Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -161,6 +222,9 @@ internal interface IDataTransferManagerInterop
 }
 
 
+/*
+ * Native WinRT activation helper.
+ */
 internal static class DataTransferManagerInterop
 {
     [DllImport(

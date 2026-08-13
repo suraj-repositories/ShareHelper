@@ -16,16 +16,24 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Show .NET Version
-        run: dotnet --info
+      - name: Clean
+        shell: pwsh
+        run: |
+          if (Test-Path "bin") {
+            Remove-Item "bin" -Recurse -Force
+          }
 
-      - name: Restore Dependencies
+          if (Test-Path "obj") {
+            Remove-Item "obj" -Recurse -Force
+          }
+
+      - name: Restore
         run: dotnet restore
 
       - name: Build
         run: dotnet build -c Release --no-restore
 
-      - name: Publish ShareHelper
+      - name: Publish
         run: >
           dotnet publish
           -c Release
@@ -37,17 +45,17 @@ jobs:
           /p:EnableCompressionInSingleFile=true
           -o ./build-output
 
-      - name: Verify EXE
+      - name: Verify
         shell: pwsh
         run: |
           if (!(Test-Path "./build-output/ShareHelper.exe")) {
-              Write-Error "ShareHelper.exe was not generated."
-              exit 1
+            Write-Error "ShareHelper.exe was not generated."
+            exit 1
           }
 
           Get-Item "./build-output/ShareHelper.exe"
 
-      - name: Upload Finished Executable
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: ShareHelper-Binary
