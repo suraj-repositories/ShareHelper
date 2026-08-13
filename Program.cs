@@ -3,13 +3,29 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Foundation;
 using Windows.Storage;
+
+using WinRT;
 
 internal class Program
 {
-    private static readonly Guid DataTransferManagerIid =
-        new("A5CAEE9B-8708-49D1-8D36-67D25A8DA00C");
+    private static readonly Guid DtmIid =
+        new Guid(
+            0xA5CAEE9B,
+            0x8708,
+            0x49D1,
+            0x8D,
+            0x36,
+            0x67,
+            0xD2,
+            0x5A,
+            0x8D,
+            0xA0,
+            0x0C
+        );
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -32,7 +48,9 @@ internal class Program
             return 1;
         }
 
-        if (!long.TryParse(args[1], out long hwndValue))
+        if (!long.TryParse(
+                args[1],
+                out long hwndValue))
         {
             Console.Error.WriteLine(
                 $"Invalid HWND: {args[1]}");
@@ -40,7 +58,8 @@ internal class Program
             return 1;
         }
 
-        IntPtr hwnd = new(hwndValue);
+        IntPtr hwnd =
+            new IntPtr(hwndValue);
 
         if (hwnd == IntPtr.Zero)
         {
@@ -78,215 +97,180 @@ internal class Program
         IntPtr hwnd)
     {
         /*
-         * Get the DataTransferManager activation factory.
+         * Get DataTransferManager activation factory.
          */
         IDataTransferManagerInterop interop =
-            GetDataTransferManagerInterop();
+            DataTransferManager
+                .As<IDataTransferManagerInterop>();
 
-        IntPtr dtmPtr = IntPtr.Zero;
+        /*
+         * IMPORTANT:
+         *
+         * A static readonly Guid cannot be passed
+         * directly using ref.
+         *
+         * Make a local copy.
+         */
+        Guid dtmIid = DtmIid;
 
-        try
+        /*
+         * Get DataTransferManager for the
+         * JavaFX HWND.
+         */
+        IntPtr result =
+            interop.GetForWindow(
+                hwnd,
+                ref dtmIid);
+
+        if (result == IntPtr.Zero)
         {
-            /*
-             * Get DataTransferManager associated
-             * with the JavaFX HWND.
-             */
-            dtmPtr =
-                interop.GetForWindow(
-                    hwnd,
-                    ref DataTransferManagerIid);
+            throw new InvalidOperationException(
+                "GetForWindow returned NULL.");
+        }
 
-            if (dtmPtr == IntPtr.Zero)
+        /*
+         * Convert ABI pointer to managed
+         * DataTransferManager.
+         */
+        DataTransferManager dataTransferManager =
+            MarshalInterface<DataTransferManager>
+                .FromAbi(result);
+
+        /*
+         * Register DataRequested handler.
+         *
+         * This is called by Windows when the
+         * Share UI requests the actual data.
+         */
+        TypedEventHandler<
+            DataTransferManager,
+            DataRequestedEventArgs> handler =
+            async (sender, args) =>
             {
-                throw new InvalidOperationException(
-                    "GetForWindow returned NULL.");
-            }
+                DataRequestDeferral? deferral =
+                    null;
 
-            /*
-             * Convert ABI pointer into the WinRT
-             * DataTransferManager object.
-             */
-            DataTransferManager dataTransferManager =
-                MarshalInterface<DataTransferManager>
-                    .FromAbi(dtmPtr);
-
-            /*
-             * Register the DataRequested event.
-             */
-            TypedEventHandler<
-                DataTransferManager,
-                DataRequestedEventArgs> handler =
-                async (sender, args) =>
+                try
                 {
-                    DataRequestDeferral? deferral = null;
+                    Console.WriteLine(
+                        "DataRequested event received.");
 
-                    try
-                    {
-                        deferral =
-                            args.Request.GetDeferral();
+                    deferral =
+                        args.Request.GetDeferral();
 
-                        args.Request.Data.Properties.Title =
-                            Path.GetFileName(filePath);
+                    /*
+                     * Required by Windows Share.
+                     */
+                    args.Request
+                        .Data
+                        .Properties
+                        .Title =
+                            Path.GetFileName(
+                                filePath);
 
-                        StorageFile storageFile =
-                            await StorageFile
-                                .GetFileFromPathAsync(
-                                    filePath);
+                    /*
+                     * Convert normal Windows path
+                     * to StorageFile.
+                     */
+                    StorageFile storageFile =
+                        await StorageFile
+                            .GetFileFromPathAsync(
+                                filePath);
 
-                        args.Request.Data.SetStorageItems(
+                    /*
+                     * Put the file into the
+                     * Windows Share package.
+                     */
+                    args.Request
+                        .Data
+                        .SetStorageItems(
                             new List<IStorageItem>
                             {
                                 storageFile
                             });
 
-                        args.Request.Data.RequestedOperation =
+                    /*
+                     * File sharing operation.
+                     */
+                    args.Request
+                        .Data
+                        .RequestedOperation =
                             DataPackageOperation.Copy;
-                    }
-                    catch (Exception ex)
+
+                    Console.WriteLine(
+                        "File added to Share package.");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"DataRequested error: {ex}");
+
+                    try
                     {
-                        Console.Error.WriteLine(
-                            $"DataRequested Error: {ex}");
+                        args.Request
+                            .FailWithDisplayText(
+                                "Unable to prepare the file for sharing.");
                     }
-                    finally
+                    catch
                     {
-                        deferral?.Complete();
+                        // Ignore secondary error.
                     }
-                };
-
-            dataTransferManager.DataRequested += handler;
-
-            try
-            {
-                Console.WriteLine(
-                    "Showing Windows Share UI...");
-
-                interop.ShowShareUIForWindow(
-                    hwnd);
-
-                /*
-                 * Keep the helper alive while the Share UI
-                 * is active.
-                 *
-                 * The DataRequested event normally happens
-                 * immediately when Windows prepares the
-                 * available share targets.
-                 */
-                await Task.Delay(
-                    TimeSpan.FromSeconds(30));
-            }
-            finally
-            {
-                dataTransferManager.DataRequested -=
-                    handler;
-            }
-        }
-        finally
-        {
-            if (dtmPtr != IntPtr.Zero)
-            {
-                Marshal.Release(
-                    dtmPtr);
-            }
-        }
-    }
-
-    private static IDataTransferManagerInterop
-        GetDataTransferManagerInterop()
-    {
-        Guid interopIid =
-            typeof(IDataTransferManagerInterop).GUID;
-
-        IntPtr factory =
-            IntPtr.Zero;
+                }
+                finally
+                {
+                    deferral?.Complete();
+                }
+            };
 
         /*
-         * IMPORTANT:
-         *
-         * RoGetActivationFactory expects an HSTRING,
-         * NOT a normal LPWStr string.
+         * Subscribe BEFORE showing the Share UI.
          */
-        
-        IntPtr className;
-
-        int stringHr =
-            WindowsCreateString(
-                "Windows.ApplicationModel.DataTransfer.DataTransferManager",
-                "Windows.ApplicationModel.DataTransfer.DataTransferManager".Length,
-                out className);
-
-        if (stringHr < 0)
-        {
-            Marshal.ThrowExceptionForHR(stringHr);
-        }
+        dataTransferManager.DataRequested +=
+            handler;
 
         try
         {
-            int hr =
-                RoGetActivationFactory(
-                    className,
-                    ref interopIid,
-                    out factory);
+            Console.WriteLine(
+                "Showing Windows Share UI...");
 
-            if (hr < 0)
-            {
-                Marshal.ThrowExceptionForHR(hr);
-            }
+            /*
+             * This associates the Share UI
+             * with the JavaFX window.
+             */
+            interop.ShowShareUIForWindow(
+                hwnd);
 
-            if (factory == IntPtr.Zero)
-            {
-                throw new InvalidOperationException(
-                    "RoGetActivationFactory returned NULL.");
-            }
-
-            return (IDataTransferManagerInterop)
-                Marshal.GetObjectForIUnknown(
-                    factory);
+            /*
+             * Keep the helper process alive.
+             *
+             * The Share UI is owned by Windows,
+             * but the DataTransferManager/event
+             * handler must remain alive.
+             */
+            await Task.Delay(
+                TimeSpan.FromMinutes(5));
         }
         finally
         {
-            if (factory != IntPtr.Zero)
-            {
-                Marshal.Release(factory);
-            }
-
-            WindowsDeleteString(
-                className);
+            /*
+             * Always unsubscribe.
+             */
+            dataTransferManager.DataRequested -=
+                handler;
         }
     }
-
-    [DllImport(
-        "combase.dll",
-        ExactSpelling = true)]
-    private static extern int RoGetActivationFactory(
-        IntPtr activatableClassId,
-        ref Guid iid,
-        out IntPtr factory);
-
-    [DllImport(
-        "combase.dll",
-        ExactSpelling = true)]
-    private static extern int WindowsCreateString(
-        [MarshalAs(UnmanagedType.LPWStr)]
-        string sourceString,
-        int length,
-        out IntPtr hstring);
-
-    [DllImport(
-        "combase.dll",
-        ExactSpelling = true)]
-    private static extern int WindowsDeleteString(
-        IntPtr hstring);
 }
 
 
 /*
- * IDataTransferManagerInterop
+ * Windows DataTransferManager interop.
  *
- * GUID:
+ * IID:
  * 3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8
  */
 [ComImport]
-[Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
+[Guid(
+    "3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
 [InterfaceType(
     ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IDataTransferManagerInterop
